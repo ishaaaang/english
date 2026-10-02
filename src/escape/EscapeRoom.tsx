@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clock, Lightbulb, Palette, RotateCcw, Lock, ArrowRight, Map as MapIcon, BookOpen, Volume2, VolumeX, X } from 'lucide-react';
-import RoomScene from './RoomScene';
+import RoomScene, { clockLabel } from './RoomScene';
+import { Dialogue, Stepper, TagPhase, ChallengePhase, DeckPhase } from './Phases';
 import TravelMap from './TravelMap';
 import { ROOMS } from './rooms';
 import { sfx, isMuted, setMuted } from './sfx';
@@ -21,6 +22,8 @@ interface Save {
   letters: string[];
   hintsShown: Record<number, boolean>;
   found: Record<number, string[]>;
+  phase: Record<number, number>;
+  wrong: Record<number, number>;
   startedAt: number | null;
   finishedAt: number | null;
   vaultOpen: boolean;
@@ -37,6 +40,8 @@ const fresh = (): Save => ({
   letters: [],
   hintsShown: {},
   found: {},
+  phase: {},
+  wrong: {},
   startedAt: null,
   finishedAt: null,
   vaultOpen: false,
@@ -98,6 +103,7 @@ const EscapeRoom = () => {
   const [mapOpen, setMapOpen] = useState(false);
   const [caseOpen, setCaseOpen] = useState(false);
   const [muted, setMutedState] = useState(isMuted());
+  const gm = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('gm');
   const [travel, setTravel] = useState<{ from: number; to: number } | null>(null);
 
   useEffect(() => {
@@ -186,12 +192,13 @@ const EscapeRoom = () => {
       <Bubbles />
       <div className="relative z-10 max-w-4xl mx-auto px-4 py-5">
         {save.started && (
-          <header className="chroma-card px-4 py-3 mb-6 flex flex-wrap items-center gap-3 justify-between">
+          <header className="chroma-card chroma-noprint px-4 py-3 mb-6 flex flex-wrap items-center gap-3 justify-between">
             <div className="font-extrabold text-lg">🎨 Operation Chroma Heist</div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`inline-flex items-center gap-1 font-mono ${overtime ? 'text-rose-300' : ''}`}>
                 <Clock size={16} /> {fmt(elapsed)} / {TARGET_MINUTES}:00
               </span>
+              {stage && <span className="text-sm font-semibold">{clockLabel(stage.id)}</span>}
               <span className="inline-flex items-center gap-1 text-sm">
                 <Lightbulb size={16} /> {HINTS_PER_TEAM - hintsUsed} hints left
               </span>
@@ -226,6 +233,19 @@ const EscapeRoom = () => {
         )}
         {body}
       </div>
+      {gm && save.started && (
+        <TeacherPanel
+          save={save}
+          stage={stage}
+          onSolve={() => {
+            if (stage && !revealing) {
+              const l = stage.options.find((o) => o.kind === 'correct')!.letter;
+              update({ letters: [...save.letters, l] });
+              setRevealing(true);
+            }
+          }}
+        />
+      )}
       {mapOpen && (
         <Overlay title="🗺️ Bikini Bottom Map" onClose={() => setMapOpen(false)}>
           <TravelMap solved={solved} />
@@ -240,6 +260,38 @@ const EscapeRoom = () => {
     </div>
   );
 };
+
+const TeacherPanel = ({ save, stage, onSolve }: { save: Save; stage?: Stage; onSolve: () => void }) => (
+  <details className="fixed bottom-3 left-3 z-40 max-w-sm chroma-card chroma-noprint p-3 text-sm">
+    <summary className="cursor-pointer font-bold">🍎 Teacher view</summary>
+    <div className="mt-2 space-y-2 max-h-[60vh] overflow-y-auto">
+      <p className="text-cyan-200">Answer key (stage → letter):</p>
+      <p className="font-mono">
+        {STAGES.map((s) => `${s.id}${s.options.find((o) => o.kind === 'correct')!.letter}`).join('  ')}
+      </p>
+      {stage && (
+        <>
+          <p>
+            <strong>Current room:</strong> {stage.color}. Best answer: {stage.options.find((o) => o.kind === 'correct')!.letter}.
+          </p>
+          <button onClick={onSolve} className="px-3 py-1 rounded-full bg-yellow-300 text-slate-900 font-bold">
+            Auto-solve this room
+          </button>
+        </>
+      )}
+      {save.sentence && (
+        <p>
+          <strong>Stage 11 sentence:</strong> {save.sentence}
+        </p>
+      )}
+      {Object.keys(save.security).length > 0 && (
+        <p>
+          <strong>Security answers:</strong> {Object.entries(save.security).map(([k, v]) => `${k}: ${v}`).join(' | ')}
+        </p>
+      )}
+    </div>
+  </details>
+);
 
 const Overlay = ({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) => (
   <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-label={title}>
@@ -268,7 +320,10 @@ const CaseFile = ({ save }: { save: Save }) => {
             <span>
               {s.id}. {s.color} · {s.location}
             </span>
-            <span>{save.letters[s.id - 1] ?? '?'}</span>
+            <span>
+              {s.id <= save.letters.length ? '⭐'.repeat(starsFor(save, s.id)) + ' ' : ''}
+              {save.letters[s.id - 1] ?? '?'}
+            </span>
           </div>
           <ul className="p-3 space-y-1.5 text-sm list-disc pl-7">
             {ROOMS[s.id].props
@@ -331,7 +386,19 @@ const Intro = ({ save, update }: { save: Save; update: (p: Partial<Save>) => voi
         You are members of SpongeBob’s search team. At each location you will read the scene, consult the Color Deck,
         and decide which interpretation of the color is best supported by the evidence.
       </p>
+      <div className="rounded-xl bg-white/10 p-4 mb-4">
+        <div className="font-bold mb-1">Every room has six steps</div>
+        <ol className="list-decimal pl-6 text-cyan-50 space-y-0.5">
+          <li><strong>Briefing:</strong> meet the characters in the room.</li>
+          <li><strong>Investigate:</strong> click every object. Some are clues, some are red herrings.</li>
+          <li><strong>Analyze:</strong> sort each object as the positive side, negative side or a red herring.</li>
+          <li><strong>Challenge:</strong> put events in order, or check true and false statements.</li>
+          <li><strong>Deck check:</strong> sort words onto the color’s slide.</li>
+          <li><strong>Question:</strong> choose the best answer to earn the room’s password letter.</li>
+        </ol>
+      </div>
       <ul className="list-disc pl-6 space-y-1 text-cyan-50">
+        <li>Earn up to three ⭐ per room. Mistakes and hint cards cost stars.</li>
         <li>Each stage has one scene, one question and four lettered answers. The correct answer’s letter is your password letter.</li>
         <li>Every color has a <em>positive</em> and a <em>negative</em> side. The best answer uses both, backed by the scene.</li>
         <li>You can’t move on until you find the right letter. The Color Deck stays open beside you.</li>
@@ -385,10 +452,17 @@ interface StageProps {
   onNext: () => void;
 }
 
+export const starsFor = (save: Save, id: number) => {
+  const w = save.wrong[id] ?? 0;
+  const hint = !!save.hintsShown[id];
+  return w <= 2 && !hint ? 3 : w <= 6 ? 2 : 1;
+};
+
 const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext }: StageProps) => {
   const room = ROOMS[stage.id];
   const found = save.found[stage.id] ?? [];
   const allFound = found.length >= room.props.length;
+  const phase = revealing ? 5 : (save.phase[stage.id] ?? 0);
   const [clue, setClue] = useState<{ label: string; text: string; emoji: string } | null>(null);
   const [message, setMessage] = useState('');
   const [wrong, setWrong] = useState<string[]>([]);
@@ -397,6 +471,9 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
   const correct = stage.options.find((o) => o.kind === 'correct')!;
   const hintShown = !!save.hintsShown[stage.id];
   const canHint = !hintShown && hintsUsed < HINTS_PER_TEAM;
+
+  const setPhase = (n: number) => update({ phase: { ...save.phase, [stage.id]: n } });
+  const onWrong = () => update({ wrong: { ...save.wrong, [stage.id]: (save.wrong[stage.id] ?? 0) + 1 } });
 
   const inspect = (id: string) => {
     const p = room.props.find((x) => x.id === id)!;
@@ -431,6 +508,7 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
       setMessage(`Option ${letter}: ${FEEDBACK[opt.kind]}`);
       setShake((n) => n + 1);
       sfx.bad();
+      onWrong();
     }
   };
 
@@ -439,7 +517,7 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
       <div className="chroma-card overflow-hidden">
         <div className="px-5 py-3 flex items-center gap-4" style={{ background: stage.hex, color: stage.ink }}>
           <Art src={`/escape/stage-${stage.id}.png`} fallback={stage.emoji} className="h-14 w-14 object-contain" />
-          <div>
+          <div className="flex-1">
             <div className="text-xs font-semibold uppercase tracking-widest opacity-80">
               Room {stage.id} of {STAGES.length} · {stage.cast}
             </div>
@@ -447,47 +525,54 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
               {stage.color} at {stage.location}
             </h2>
           </div>
+          <div className="text-sm font-bold opacity-90 whitespace-nowrap">{clockLabel(stage.id)}</div>
+        </div>
+        <div className="p-3">
+          <Stepper phase={phase} color={stage.hex === '#f8fafc' || stage.hex === '#facc15' ? '#0891b2' : stage.hex} />
         </div>
       </div>
 
-      <RoomScene stage={stage} found={found} pulse={hintShown && !allFound && !revealing} onInspect={inspect} />
+      <RoomScene stage={stage} found={found} pulse={hintShown && !allFound && phase === 1} interactive={phase === 1} onInspect={inspect} />
 
-      <div className="chroma-card p-4 flex gap-3 items-start">
-        <div className="text-3xl">{clue ? clue.emoji : '💬'}</div>
-        <div>
-          <div className="text-xs uppercase tracking-widest text-yellow-200">
-            {clue ? `Inspecting: ${clue.label}` : room.line.who}
+      {phase === 0 && <Dialogue lines={room.intro} cta="Enter the room" onDone={() => setPhase(1)} />}
+
+      {phase === 1 && (
+        <>
+          <div className="chroma-card p-4 flex gap-3 items-start">
+            <div className="text-3xl">{clue ? clue.emoji : '👆'}</div>
+            <div>
+              <div className="text-xs uppercase tracking-widest text-yellow-200">{clue ? `Inspecting: ${clue.label}` : 'Investigate'}</div>
+              <p className="text-lg">{clue ? clue.text : 'Click every glowing object in the room. Some are clues and some are red herrings. You’ll sort them next.'}</p>
+            </div>
           </div>
-          <p className="text-lg">{clue ? clue.text : `“${room.line.text}”`}</p>
-          {!clue && !allFound && (
-            <p className="text-sm text-cyan-200 mt-1">👆 Click the glowing objects in the room to investigate.</p>
-          )}
-        </div>
-      </div>
+          <div className="chroma-card p-5 space-y-2">
+            {stage.id === 1 && <p className="text-sm text-yellow-200">📣 Mission briefing: recover the formula. Every room hands you one password letter.</p>}
+            <div className="text-xs uppercase tracking-widest text-cyan-200">What happened here</div>
+            {stage.scene.map((p) => (
+              <p key={p}>{p}</p>
+            ))}
+            <p className="text-sm text-cyan-200">🧠 Thinking skill: {stage.skill}</p>
+          </div>
+          <div className="chroma-card p-5 text-center">
+            {allFound ? (
+              <button onClick={() => setPhase(2)} className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-yellow-300 text-slate-900 font-extrabold hover:bg-yellow-200">
+                Analyze the evidence <ArrowRight size={18} />
+              </button>
+            ) : (
+              <>
+                <p className="font-bold">🔒 Inspect {room.props.length - found.length} more object{room.props.length - found.length === 1 ? '' : 's'} to continue.</p>
+                <HintButton stage={stage} save={save} update={update} hintsUsed={hintsUsed} canHint={canHint} hintShown={hintShown} />
+              </>
+            )}
+          </div>
+        </>
+      )}
 
-      <div className="chroma-card p-5 space-y-2">
-        {stage.id === 1 && (
-          <p className="text-sm text-yellow-200">
-            📣 Mission briefing: recover the formula. Every room hands you one password letter.
-          </p>
-        )}
-        <div className="text-xs uppercase tracking-widest text-cyan-200">What happened here</div>
-        {stage.scene.map((p) => (
-          <p key={p}>{p}</p>
-        ))}
-        <p className="text-sm text-cyan-200">🧠 Thinking skill: {stage.skill}</p>
-      </div>
+      {phase === 2 && <TagPhase stage={stage} onWrong={onWrong} onDone={() => setPhase(3)} />}
+      {phase === 3 && <ChallengePhase stage={stage} onWrong={onWrong} onDone={() => setPhase(4)} />}
+      {phase === 4 && <DeckPhase stage={stage} onWrong={onWrong} onDone={() => setPhase(5)} />}
 
-      {!allFound && !revealing ? (
-        <div className="chroma-card p-6 text-center border-2 border-dashed border-white/30">
-          <div className="text-4xl mb-1">🔒</div>
-          <p className="font-bold">The door is locked.</p>
-          <p className="text-cyan-100">
-            Investigate {room.props.length - found.length} more object{room.props.length - found.length === 1 ? '' : 's'} to unlock the question.
-          </p>
-          <HintButton stage={stage} save={save} update={update} hintsUsed={hintsUsed} canHint={canHint} hintShown={hintShown} />
-        </div>
-      ) : (
+      {phase === 5 && (
         <div className="chroma-card p-6">
           <h3 className="text-xl font-bold mb-4">{stage.question}</h3>
 
@@ -532,8 +617,12 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
           </div>
 
           {message && !revealing && <p className="mt-4 rounded-lg bg-rose-900/50 border border-rose-400/40 px-4 py-3">{message}</p>}
+        </div>
+      )}
 
-          {!revealing && <HintButton stage={stage} save={save} update={update} hintsUsed={hintsUsed} canHint={canHint} hintShown={hintShown} />}
+      {phase >= 2 && !revealing && (
+        <div className="chroma-card p-4 text-center">
+          <HintButton stage={stage} save={save} update={update} hintsUsed={hintsUsed} canHint={canHint} hintShown={hintShown} />
         </div>
       )}
 
@@ -543,7 +632,18 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
           <div className="chroma-pop mx-auto my-3 h-24 w-24 rounded-2xl flex items-center justify-center text-6xl font-extrabold" style={{ background: stage.hex, color: stage.ink }}>
             {correct.letter}
           </div>
+          <div className="text-3xl mb-2" aria-label={`${starsFor(save, stage.id)} stars`}>
+            {'⭐'.repeat(starsFor(save, stage.id))}
+            {'☆'.repeat(3 - starsFor(save, stage.id))}
+          </div>
           <p className="max-w-xl mx-auto mb-4">{stage.why}</p>
+          <div className="max-w-xl mx-auto mb-4 text-left rounded-xl bg-white/10 p-3 flex gap-3 items-start">
+            <div className="text-3xl">{room.outro[0].emoji}</div>
+            <div>
+              <div className="text-xs uppercase tracking-widest text-yellow-200">{room.outro[0].who}</div>
+              <p>“{room.outro[0].text}”</p>
+            </div>
+          </div>
           <button onClick={onNext} className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-yellow-300 text-slate-900 font-extrabold hover:bg-yellow-200">
             {stage.id === STAGES.length ? 'To the vault' : `Travel to room ${stage.id + 1}`} <ArrowRight size={18} />
           </button>
@@ -803,7 +903,7 @@ const Escape = ({
         of every color, but your team saw both sides.
       </p>
       <p className="font-mono text-yellow-200">
-        Time {fmt(elapsed)} · Hints used {hintsUsed}/{HINTS_PER_TEAM}
+        Time {fmt(elapsed)} · Hints used {hintsUsed}/{HINTS_PER_TEAM} · ⭐ {STAGES.reduce((n, st) => n + starsFor(save, st.id), 0)}/{STAGES.length * 3}
       </p>
     </div>
     <div className="chroma-card p-6 space-y-4">
@@ -821,7 +921,43 @@ const Escape = ({
       ))}
       <p className="text-sm text-cyan-200">Your answers are saved in this browser. Share them with your class.</p>
     </div>
-    <div className="text-center">
+    <div className="chroma-card p-6 space-y-2 chroma-print">
+      <h3 className="text-2xl font-bold">📋 Team results</h3>
+      <p>
+        <strong>Team:</strong> {save.names.filter(Boolean).join(', ') || '(no names entered)'}
+      </p>
+      <p>
+        <strong>Password:</strong> {save.letters.join('')} · <strong>Time:</strong> {fmt(elapsed)} · <strong>Hints:</strong> {hintsUsed}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {STAGES.map((st) => (
+          <span key={st.id} className="px-2 py-1 rounded-lg text-sm font-bold" style={{ background: st.hex, color: st.ink }}>
+            {st.color}: {'⭐'.repeat(starsFor(save, st.id))}
+          </span>
+        ))}
+      </div>
+      {save.sentence && (
+        <p>
+          <strong>Stage 11 sentence:</strong> {save.sentence}
+        </p>
+      )}
+      {save.security.why && (
+        <p>
+          <strong>Security question:</strong> {save.security.c1} ({save.security.p1} / {save.security.n1}) and {save.security.c2} ({save.security.p2} / {save.security.n2}). {save.security.why}
+        </p>
+      )}
+      {PROMPTS.map((p) =>
+        save.debrief[p.k] ? (
+          <p key={p.k}>
+            <strong>{p.label}:</strong> {save.debrief[p.k]}
+          </p>
+        ) : null,
+      )}
+    </div>
+    <div className="text-center chroma-noprint space-x-3">
+      <button onClick={() => window.print()} className="px-6 py-3 rounded-full bg-yellow-300 text-slate-900 font-bold hover:bg-yellow-200">
+        🖨️ Print results
+      </button>
       <button onClick={onReset} className="px-6 py-3 rounded-full border border-white/40 hover:bg-white/10">
         Play again
       </button>

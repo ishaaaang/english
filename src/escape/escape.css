@@ -136,3 +136,9 @@
 @media (prefers-reduced-motion: reduce) {
   .chroma-bob, .chroma-ring, .chroma-ring-strong, .chroma-door-in, .chroma-fall { animation: none; }
 }
+
+@media print {
+  .chroma-noprint, .chroma-bubbles, .chroma-fall { display: none !important; }
+  .chroma-root { background: #fff !important; color: #000 !important; }
+  .chroma-card { background: #fff !important; color: #000 !important; border: 1px solid #999 !important; backdrop-filter: none; }
+}
