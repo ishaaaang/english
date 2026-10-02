@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Clock, Lightbulb, Palette, RotateCcw, Lock, ArrowRight } from 'lucide-react';
+import { Clock, Lightbulb, Palette, RotateCcw, Lock, ArrowRight, Map as MapIcon, BookOpen, Volume2, VolumeX, X } from 'lucide-react';
+import RoomScene from './RoomScene';
+import TravelMap from './TravelMap';
+import { ROOMS } from './rooms';
+import { sfx, isMuted, setMuted } from './sfx';
 import ColorDeck from './ColorDeck';
 import {
   FEEDBACK,
@@ -16,6 +20,7 @@ interface Save {
   started: boolean;
   letters: string[];
   hintsShown: Record<number, boolean>;
+  found: Record<number, string[]>;
   startedAt: number | null;
   finishedAt: number | null;
   vaultOpen: boolean;
@@ -31,6 +36,7 @@ const fresh = (): Save => ({
   started: false,
   letters: [],
   hintsShown: {},
+  found: {},
   startedAt: null,
   finishedAt: null,
   vaultOpen: false,
@@ -89,6 +95,10 @@ const EscapeRoom = () => {
   const [now, setNow] = useState(Date.now());
   const [deckOpen, setDeckOpen] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [caseOpen, setCaseOpen] = useState(false);
+  const [muted, setMutedState] = useState(isMuted());
+  const [travel, setTravel] = useState<{ from: number; to: number } | null>(null);
 
   useEffect(() => {
     try {
@@ -124,6 +134,25 @@ const EscapeRoom = () => {
     body = <Intro save={save} update={update} />;
   } else if (save.escaped) {
     body = <Escape save={save} update={update} elapsed={elapsed} hintsUsed={hintsUsed} onReset={reset} />;
+  } else if (travel) {
+    const dest = STAGES[travel.to];
+    body = (
+      <div className="chroma-card p-5 space-y-4 text-center chroma-door-in">
+        <p className="text-sm uppercase tracking-widest text-cyan-200">Travelling across Bikini Bottom…</p>
+        <TravelMap
+          solved={solved}
+          from={travel.from}
+          to={travel.to}
+          onDone={() => {
+            setTravel(null);
+            setRevealing(false);
+          }}
+        />
+        <h2 className="text-2xl font-extrabold">
+          Next stop: {dest.color} at {dest.location} {dest.emoji}
+        </h2>
+      </div>
+    );
   } else if (stage) {
     body = (
       <StageView
@@ -137,7 +166,15 @@ const EscapeRoom = () => {
           update({ letters: [...save.letters, letter] });
           setRevealing(true);
         }}
-        onNext={() => setRevealing(false)}
+        onNext={() => {
+          if (viewIdx + 1 < STAGES.length) {
+            sfx.travel();
+            setTravel({ from: viewIdx, to: viewIdx + 1 });
+          } else {
+            sfx.vault();
+            setRevealing(false);
+          }
+        }}
       />
     );
   } else {
@@ -164,6 +201,22 @@ const EscapeRoom = () => {
               >
                 <Palette size={16} /> Color Deck
               </button>
+              <button onClick={() => setMapOpen(true)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25">
+                <MapIcon size={16} /> Map
+              </button>
+              <button onClick={() => setCaseOpen(true)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25">
+                <BookOpen size={16} /> Case File
+              </button>
+              <button
+                onClick={() => {
+                  setMuted(!muted);
+                  setMutedState(!muted);
+                }}
+                className="p-2 rounded-full hover:bg-white/10"
+                aria-label={muted ? 'Unmute sound' : 'Mute sound'}
+              >
+                {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+              </button>
               <button onClick={reset} className="p-2 rounded-full hover:bg-white/10" aria-label="Restart">
                 <RotateCcw size={16} />
               </button>
@@ -173,7 +226,61 @@ const EscapeRoom = () => {
         )}
         {body}
       </div>
+      {mapOpen && (
+        <Overlay title="🗺️ Bikini Bottom Map" onClose={() => setMapOpen(false)}>
+          <TravelMap solved={solved} />
+        </Overlay>
+      )}
+      {caseOpen && (
+        <Overlay title="📁 Case File" onClose={() => setCaseOpen(false)}>
+          <CaseFile save={save} />
+        </Overlay>
+      )}
       <ColorDeck open={deckOpen} onClose={() => setDeckOpen(false)} highlight={stage?.color} />
+    </div>
+  );
+};
+
+const Overlay = ({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-label={title}>
+    <button className="absolute inset-0 bg-black/70" aria-label="Close" onClick={onClose} />
+    <div className="relative chroma-card max-w-3xl w-full max-h-[90vh] overflow-y-auto p-5 bg-[#062a3a]">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-2xl font-bold">{title}</h2>
+        <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10" aria-label="Close">
+          <X size={22} />
+        </button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+
+const CaseFile = ({ save }: { save: Save }) => {
+  const rows = STAGES.filter((s) => (save.found[s.id] ?? []).length > 0 || s.id <= save.letters.length);
+  if (!rows.length) return <p className="text-cyan-100">No evidence yet. Inspect objects in the room to fill this in.</p>;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-cyan-200">Every clue you inspect is saved here, along with each password letter.</p>
+      {rows.map((s) => (
+        <div key={s.id} className="rounded-xl border border-white/15 overflow-hidden">
+          <div className="px-3 py-2 font-bold flex justify-between" style={{ background: s.hex, color: s.ink }}>
+            <span>
+              {s.id}. {s.color} · {s.location}
+            </span>
+            <span>{save.letters[s.id - 1] ?? '?'}</span>
+          </div>
+          <ul className="p-3 space-y-1.5 text-sm list-disc pl-7">
+            {ROOMS[s.id].props
+              .filter((p) => (save.found[s.id] ?? []).includes(p.id))
+              .map((p) => (
+                <li key={p.id}>
+                  <strong>{p.emoji} {p.label}:</strong> {p.clue}
+                </li>
+              ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 };
@@ -279,6 +386,10 @@ interface StageProps {
 }
 
 const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext }: StageProps) => {
+  const room = ROOMS[stage.id];
+  const found = save.found[stage.id] ?? [];
+  const allFound = found.length >= room.props.length;
+  const [clue, setClue] = useState<{ label: string; text: string; emoji: string } | null>(null);
   const [message, setMessage] = useState('');
   const [wrong, setWrong] = useState<string[]>([]);
   const [shake, setShake] = useState(0);
@@ -286,6 +397,17 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
   const correct = stage.options.find((o) => o.kind === 'correct')!;
   const hintShown = !!save.hintsShown[stage.id];
   const canHint = !hintShown && hintsUsed < HINTS_PER_TEAM;
+
+  const inspect = (id: string) => {
+    const p = room.props.find((x) => x.id === id)!;
+    setClue({ label: p.label, text: p.clue, emoji: p.emoji });
+    if (!found.includes(id)) {
+      update({ found: { ...save.found, [stage.id]: [...found, id] } });
+      sfx.found();
+    } else {
+      sfx.click();
+    }
+  };
 
   const choose = (letter: string) => {
     if (stage.creation) {
@@ -295,131 +417,135 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
       if (!hasPos || !hasNeg) {
         setMessage('✍️ Your sentence needs one positive and one negative white word first (see the Color Deck).');
         setShake((n) => n + 1);
+        sfx.bad();
         return;
       }
     }
     const opt = stage.options.find((o) => o.letter === letter)!;
     if (opt.kind === 'correct') {
       setMessage('');
+      sfx.ok();
       onSolved(letter);
     } else {
       setWrong((w) => [...w, letter]);
       setMessage(`Option ${letter}: ${FEEDBACK[opt.kind]}`);
       setShake((n) => n + 1);
+      sfx.bad();
     }
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4 chroma-door-in">
       <div className="chroma-card overflow-hidden">
-        <div className="px-6 py-4 flex items-center gap-4" style={{ background: stage.hex, color: stage.ink }}>
-          <Art src={`/escape/stage-${stage.id}.png`} fallback={stage.emoji} className="h-20 w-20 object-contain" />
+        <div className="px-5 py-3 flex items-center gap-4" style={{ background: stage.hex, color: stage.ink }}>
+          <Art src={`/escape/stage-${stage.id}.png`} fallback={stage.emoji} className="h-14 w-14 object-contain" />
           <div>
-            <div className="text-sm font-semibold uppercase tracking-widest opacity-80">
-              Stage {stage.id} of {STAGES.length}
+            <div className="text-xs font-semibold uppercase tracking-widest opacity-80">
+              Room {stage.id} of {STAGES.length} · {stage.cast}
             </div>
-            <h2 className="text-3xl font-extrabold">
+            <h2 className="text-2xl sm:text-3xl font-extrabold leading-tight">
               {stage.color} at {stage.location}
             </h2>
-            <div className="text-sm opacity-90">{stage.cast}</div>
           </div>
-        </div>
-        <div className="p-6 space-y-3 text-lg leading-relaxed">
-          {stage.id === 1 && (
-            <p className="text-sm text-yellow-200">
-              📣 Mission briefing: recover the formula. Every stage hands you one password letter.
-            </p>
-          )}
-          {stage.scene.map((p) => (
-            <p key={p}>{p}</p>
-          ))}
-          <p className="text-sm text-cyan-200">🧠 Thinking skill: {stage.skill}</p>
         </div>
       </div>
 
-      <div className="chroma-card p-6">
-        <h3 className="text-xl font-bold mb-4">{stage.question}</h3>
+      <RoomScene stage={stage} found={found} pulse={hintShown && !allFound && !revealing} onInspect={inspect} />
 
-        {stage.creation && (
-          <div className="mb-5">
-            <label className="block font-semibold mb-1">{stage.creation.prompt}</label>
-            <textarea
-              value={save.sentence}
-              onChange={(e) => update({ sentence: e.target.value })}
-              disabled={revealing}
-              rows={3}
-              placeholder="“Gee, this blank board is …”"
-              className="w-full rounded-lg bg-black/30 border border-white/25 px-3 py-2"
-            />
-            <p className="text-xs text-cyan-200 mt-1">Show your sentence to the game master. It is checked by a person.</p>
+      <div className="chroma-card p-4 flex gap-3 items-start">
+        <div className="text-3xl">{clue ? clue.emoji : '💬'}</div>
+        <div>
+          <div className="text-xs uppercase tracking-widest text-yellow-200">
+            {clue ? `Inspecting: ${clue.label}` : room.line.who}
           </div>
-        )}
-
-        <div key={shake} className={`grid gap-3 ${shake ? 'chroma-shake' : ''}`}>
-          {options.map((o) => {
-            const isRight = revealing && o.letter === correct.letter;
-            const isWrong = wrong.includes(o.letter);
-            return (
-              <button
-                key={o.letter}
-                disabled={revealing || isWrong}
-                onClick={() => choose(o.letter)}
-                className="chroma-option"
-                style={{
-                  borderColor: isRight ? '#4ade80' : isWrong ? '#f87171' : undefined,
-                  background: isRight ? 'rgba(74,222,128,0.2)' : isWrong ? 'rgba(248,113,113,0.12)' : undefined,
-                  opacity: isWrong ? 0.55 : 1,
-                }}
-              >
-                <span
-                  className="shrink-0 h-9 w-9 rounded-full flex items-center justify-center font-extrabold"
-                  style={{ background: stage.hex, color: stage.ink }}
-                >
-                  {o.letter}
-                </span>
-                <span>{o.text}</span>
-              </button>
-            );
-          })}
+          <p className="text-lg">{clue ? clue.text : `“${room.line.text}”`}</p>
+          {!clue && !allFound && (
+            <p className="text-sm text-cyan-200 mt-1">👆 Click the glowing objects in the room to investigate.</p>
+          )}
         </div>
+      </div>
 
-        {message && !revealing && (
-          <p className="mt-4 rounded-lg bg-rose-900/50 border border-rose-400/40 px-4 py-3">{message}</p>
-        )}
-
-        {hintShown && !revealing && (
-          <p className="mt-4 rounded-lg bg-yellow-200/15 border border-yellow-200/40 px-4 py-3">
-            💡 <strong>Hint card:</strong> {stage.hint}
+      <div className="chroma-card p-5 space-y-2">
+        {stage.id === 1 && (
+          <p className="text-sm text-yellow-200">
+            📣 Mission briefing: recover the formula. Every room hands you one password letter.
           </p>
         )}
-
-        {!revealing && (
-          <button
-            disabled={!canHint}
-            onClick={() => update({ hintsShown: { ...save.hintsShown, [stage.id]: true } })}
-            className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-full border border-yellow-200/60 text-yellow-100 disabled:opacity-40 hover:bg-yellow-200/10"
-          >
-            <Lightbulb size={16} />
-            {hintShown ? 'Hint used for this stage' : `Use a hint card (${HINTS_PER_TEAM - hintsUsed} left)`}
-          </button>
-        )}
+        <div className="text-xs uppercase tracking-widest text-cyan-200">What happened here</div>
+        {stage.scene.map((p) => (
+          <p key={p}>{p}</p>
+        ))}
+        <p className="text-sm text-cyan-200">🧠 Thinking skill: {stage.skill}</p>
       </div>
+
+      {!allFound && !revealing ? (
+        <div className="chroma-card p-6 text-center border-2 border-dashed border-white/30">
+          <div className="text-4xl mb-1">🔒</div>
+          <p className="font-bold">The door is locked.</p>
+          <p className="text-cyan-100">
+            Investigate {room.props.length - found.length} more object{room.props.length - found.length === 1 ? '' : 's'} to unlock the question.
+          </p>
+          <HintButton stage={stage} save={save} update={update} hintsUsed={hintsUsed} canHint={canHint} hintShown={hintShown} />
+        </div>
+      ) : (
+        <div className="chroma-card p-6">
+          <h3 className="text-xl font-bold mb-4">{stage.question}</h3>
+
+          {stage.creation && (
+            <div className="mb-5">
+              <label className="block font-semibold mb-1">{stage.creation.prompt}</label>
+              <textarea
+                value={save.sentence}
+                onChange={(e) => update({ sentence: e.target.value })}
+                disabled={revealing}
+                rows={3}
+                placeholder="“Gee, this blank board is …”"
+                className="w-full rounded-lg bg-black/30 border border-white/25 px-3 py-2"
+              />
+              <p className="text-xs text-cyan-200 mt-1">Show your sentence to the game master. It is checked by a person.</p>
+            </div>
+          )}
+
+          <div key={shake} className={`grid gap-3 ${shake ? 'chroma-shake' : ''}`}>
+            {options.map((o) => {
+              const isRight = revealing && o.letter === correct.letter;
+              const isWrong = wrong.includes(o.letter);
+              return (
+                <button
+                  key={o.letter}
+                  disabled={revealing || isWrong}
+                  onClick={() => choose(o.letter)}
+                  className="chroma-option"
+                  style={{
+                    borderColor: isRight ? '#4ade80' : isWrong ? '#f87171' : undefined,
+                    background: isRight ? 'rgba(74,222,128,0.2)' : isWrong ? 'rgba(248,113,113,0.12)' : undefined,
+                    opacity: isWrong ? 0.55 : 1,
+                  }}
+                >
+                  <span className="shrink-0 h-9 w-9 rounded-full flex items-center justify-center font-extrabold" style={{ background: stage.hex, color: stage.ink }}>
+                    {o.letter}
+                  </span>
+                  <span>{o.text}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {message && !revealing && <p className="mt-4 rounded-lg bg-rose-900/50 border border-rose-400/40 px-4 py-3">{message}</p>}
+
+          {!revealing && <HintButton stage={stage} save={save} update={update} hintsUsed={hintsUsed} canHint={canHint} hintShown={hintShown} />}
+        </div>
+      )}
 
       {revealing && (
         <div className="chroma-card p-6 text-center border-2" style={{ borderColor: stage.hex }}>
-          <div className="text-sm uppercase tracking-widest text-cyan-200">Password letter unlocked</div>
-          <div
-            className="chroma-pop mx-auto my-3 h-24 w-24 rounded-2xl flex items-center justify-center text-6xl font-extrabold"
-            style={{ background: stage.hex, color: stage.ink }}
-          >
+          <div className="text-sm uppercase tracking-widest text-cyan-200">Door unlocked! Password letter found</div>
+          <div className="chroma-pop mx-auto my-3 h-24 w-24 rounded-2xl flex items-center justify-center text-6xl font-extrabold" style={{ background: stage.hex, color: stage.ink }}>
             {correct.letter}
           </div>
           <p className="max-w-xl mx-auto mb-4">{stage.why}</p>
-          <button
-            onClick={onNext}
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-yellow-300 text-slate-900 font-extrabold hover:bg-yellow-200"
-          >
-            {stage.id === STAGES.length ? 'To the vault' : `On to stage ${stage.id + 1}`} <ArrowRight size={18} />
+          <button onClick={onNext} className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-yellow-300 text-slate-900 font-extrabold hover:bg-yellow-200">
+            {stage.id === STAGES.length ? 'To the vault' : `Travel to room ${stage.id + 1}`} <ArrowRight size={18} />
           </button>
         </div>
       )}
@@ -427,7 +553,65 @@ const StageView = ({ stage, save, hintsUsed, revealing, update, onSolved, onNext
   );
 };
 
+const HintButton = ({
+  stage,
+  save,
+  update,
+  hintsUsed,
+  canHint,
+  hintShown,
+}: {
+  stage: Stage;
+  save: Save;
+  update: (p: Partial<Save>) => void;
+  hintsUsed: number;
+  canHint: boolean;
+  hintShown: boolean;
+}) => (
+  <div className="mt-4">
+    {hintShown && (
+      <p className="mb-3 rounded-lg bg-yellow-200/15 border border-yellow-200/40 px-4 py-3 text-left">
+        💡 <strong>Hint card:</strong> {stage.hint}
+      </p>
+    )}
+    <button
+      disabled={!canHint}
+      onClick={() => update({ hintsShown: { ...save.hintsShown, [stage.id]: true } })}
+      className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-yellow-200/60 text-yellow-100 disabled:opacity-40 hover:bg-yellow-200/10"
+    >
+      <Lightbulb size={16} />
+      {hintShown ? 'Hint used for this room' : `Use a hint card (${HINTS_PER_TEAM - hintsUsed} left)`}
+    </button>
+  </div>
+);
+
 /* ---------------------------------- Vault --------------------------------- */
+
+const VaultDoor = ({ open }: { open: boolean }) => (
+  <svg viewBox="0 0 300 300" className="mx-auto w-52 h-52 mb-2" role="img" aria-label={open ? 'Vault open' : 'Vault locked'}>
+    <rect x="20" y="20" width="260" height="260" rx="26" fill="#0f172a" stroke="#475569" strokeWidth="8" />
+    {open && <rect x="40" y="40" width="220" height="220" rx="16" fill="#fde047" opacity=".9" />}
+    {open && (
+      <text x="150" y="160" fontSize="90" textAnchor="middle" dominantBaseline="middle">
+        📜
+      </text>
+    )}
+    <g className={open ? 'chroma-vault-open' : ''}>
+      <rect x="40" y="40" width="220" height="220" rx="16" fill="#64748b" stroke="#cbd5e1" strokeWidth="6" />
+      {[56, 244].flatMap((x) => [56, 244].map((y) => <circle key={`${x}${y}`} cx={x} cy={y} r="7" fill="#cbd5e1" />))}
+      <circle cx="150" cy="150" r="62" fill="#475569" stroke="#e2e8f0" strokeWidth="6" />
+      <g className={open ? 'chroma-vault-spin' : ''}>
+        {[0, 60, 120].map((a) => (
+          <rect key={a} x="140" y="76" width="20" height="148" rx="8" fill="#fde047" transform={`rotate(${a} 150 150)`} />
+        ))}
+        <circle cx="150" cy="150" r="18" fill="#ca8a04" />
+      </g>
+      <text x="150" y="252" fontSize="14" fontWeight="800" fill="#e2e8f0" textAnchor="middle">
+        PLANKTON’S VAULT
+      </text>
+    </g>
+  </svg>
+);
 
 const Vault = ({ save, update, elapsed }: { save: Save; update: (p: Partial<Save>) => void; elapsed: number }) => {
   const [chars, setChars] = useState<string[]>(Array(PASSWORD.length).fill(''));
@@ -452,10 +636,12 @@ const Vault = ({ save, update, elapsed }: { save: Save; update: (p: Partial<Save
   const tryVault = () => {
     if (chars.join('') === PASSWORD) {
       setError('');
+      sfx.vault();
       update({ vaultOpen: true });
     } else {
       setError('The vault buzzes. Check the letters in stage order.');
       setShake((n) => n + 1);
+      sfx.bad();
     }
   };
 
@@ -473,6 +659,7 @@ const Vault = ({ save, update, elapsed }: { save: Save; update: (p: Partial<Save
       setFormError('Explain what the password says about Plankton in a full sentence or two.');
       return;
     }
+    sfx.ok();
     update({ escaped: true, finishedAt: save.finishedAt ?? Date.now() });
   };
 
@@ -481,7 +668,7 @@ const Vault = ({ save, update, elapsed }: { save: Save; update: (p: Partial<Save
   return (
     <div className="space-y-5">
       <div className="chroma-card p-6 text-center">
-        <div className="text-6xl mb-2">🔐</div>
+        <VaultDoor open={save.vaultOpen} />
         <h2 className="text-3xl font-extrabold mb-1">Plankton’s Vault</h2>
         <p className="text-cyan-100 mb-4">Enter all 14 letters in stage order.</p>
         <div className="flex flex-wrap justify-center gap-1.5 mb-4" aria-label="Collected letters">
@@ -598,6 +785,16 @@ const Escape = ({
   onReset: () => void;
 }) => (
   <div className="space-y-5">
+    {Array.from({ length: 18 }, (_, i) => (
+      <span
+        key={i}
+        className="chroma-fall text-2xl"
+        style={{ left: `${(i * 37) % 100}%`, animationDuration: `${5 + (i % 5)}s`, animationDelay: `${(i % 7) * 0.6}s` }}
+        aria-hidden
+      >
+        {['🎉', '🍔', '✨', '🫧', '🧽'][i % 5]}
+      </span>
+    ))}
     <div className="chroma-card p-8 text-center">
       <div className="text-6xl mb-2">🎉 🦀 🧽 🎉</div>
       <h2 className="text-4xl font-extrabold mb-2">You escaped!</h2>
