@@ -1,6 +1,7 @@
-# Operation Chroma Heist
+# For Raaga 💙
 
-A SpongeBob color-symbolism escape room (React + TypeScript + Vite + Tailwind).
+A cute blue-themed "will you go on a date with me?" page (React + TypeScript + Vite + Tailwind).
+Every "No" makes the "Yes" button bigger, and a "Yes" opens a date planner.
 
 ```
 npm install
@@ -8,6 +9,4 @@ npm run dev     # http://localhost:5173
 npm run build   # outputs dist/
 ```
 
-- Game content (stages, answers, hints, Color Deck): `src/escape/data.ts`
-- Artwork: put `hero.png` and `stage-1.png` … `stage-14.png` in `public/escape/`. Missing images fall back to emoji.
-- Netlify: build command `npm run build`, publish directory `dist`.
+- Page: `src/ask/AskRaaga.tsx`, styles: `src/ask/ask.css`
